@@ -99,7 +99,7 @@ local CoreFrameOnEvent = function (self, event, ...)
 
     addonData.utils.printWithName('Thank you for using this addon! Hope it makes your Azeroth life a little easier :)')
     addonData.utils.printWithName('Version: ' .. addonData.core.version .. '. Use "/gart" command for help.')
-    addonData.utils.printWithName('If you found issues or want live feedback: https://www.curseforge.com/wow/addons/gigaautoresourcestracker.')
+    addonData.utils.printWithName('If you found issues or want leave feedback: https://www.curseforge.com/wow/addons/gigaautoresourcestracker.')
 
     if (addonData.core.version ~= GARTCoreVersion) then
         onVersionChange()
