@@ -3,6 +3,12 @@
 ## Title: GigaAutoResourcesTracker
 ## Notes: Solve an issue when you forget to enable Find Minerals or Find Herbs.
 ## Author: gigahertz
-## Version: 0.0.1
+## Version: 1.1.0
+## DefaultState: enabled
+## SavedVariablesPerCharacter: GARTCharacterSettings, GARTCoreVersion
 
+utils.lua
+config.lua
+core.lua
+cmd.lua
 main.lua
