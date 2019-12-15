@@ -1,19 +1,18 @@
+local addonName, addonData = ...
 
-local playerUnghostFrame = CreateFrame('Frame')
+addonData.main = {}
 
-playerUnghostFrame:RegisterEvent("PLAYER_UNGHOST")
-playerUnghostFrame:RegisterEvent("PLAYER_ALIVE")
+addonData.main.playerUnghostFrame = CreateFrame('Frame')
 
-playerUnghostFrame:HookScript("OnEvent", function ()
-	local findMineralsSpellID = 2580
-	local findHerbsSpellID = 2383
+addonData.main.playerUnghostFrame:RegisterEvent("PLAYER_UNGHOST")
+addonData.main.playerUnghostFrame:RegisterEvent("PLAYER_ALIVE")
 
-	local miningUsable = IsSpellKnown(findMineralsSpellID);
-	local herbalismUsable = IsSpellKnown(findHerbsSpellID);
+addonData.main.playerUnghostFrame:HookScript("OnEvent", function ()
+	for _, tracker in ipairs(addonData.core.getCharacterTrackersList()) do
+		if (IsSpellKnown(tracker.id)) then
+			CastSpellByID(tracker.id)
 
-	if (miningUsable) then
-		CastSpellByID(findMineralsSpellID)
-	elseif (herbalismUsable) then
-		CastSpellByID(findHerbsSpellID)
+			break
+		end
 	end
 end)
