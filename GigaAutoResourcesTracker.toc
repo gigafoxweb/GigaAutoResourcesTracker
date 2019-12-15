@@ -5,9 +5,10 @@
 ## Author: gigahertz
 ## Version: 1.1.0
 ## DefaultState: enabled
-## SavedVariablesPerCharacter: characterCoreSettings
+## SavedVariablesPerCharacter: GARTCharacterSettings, GARTCoreVersion
 
 utils.lua
+config.lua
 core.lua
 cmd.lua
 main.lua

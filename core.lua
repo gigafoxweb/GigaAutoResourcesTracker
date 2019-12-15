@@ -1,46 +1,53 @@
 local addonName, addonData = ...
 
 addonData.core = {}
+addonData.core.version = '1.1.0'
 
-addonData.core.trackersList = {
-    {
-        name = 'findMinerals',
-        id = 2580,
-        priority = 1000
-    },
-    {
-        name = 'findHerbs',
-        id = 2383,
-        priority = 500
-    }
-}
-
-addonData.core.getDefaultCharacterCoreSettings = function()
+addonData.core.getDefaultCharacterSettings = function()
     return {
-        trackersList = addonData.core.trackersList
-    };
+        trackersList = addonData.core.getDefaultCharacterTrackerList()
+    }
+end
+
+addonData.core.getDefaultCharacterTrackerList = function()
+    local trackersList = {}
+    for index, tracker in ipairs(addonData.config.trackersList) do
+        trackersList[index] = {
+            name = tracker.name,
+            id = tracker.id,
+            priority = tracker.priority,
+        }
+    end
+
+    return trackersList
 end
 
 addonData.core.getCharacterTrackersList = function()
-    return characterCoreSettings.trackersList;
+    return GARTCharacterSettings.trackersList
 end
 
-addonData.core.LoadCharacterSettings = function()
-    if not characterCoreSettings then
-        characterCoreSettings = {}
+addonData.core.loadVersion = function()
+    if not GARTCoreVersion then
+        GARTCoreVersion = addonData.core.version
+    end
+end
+
+addonData.core.loadCharacterSettings = function()
+    if not GARTCharacterSettings then
+        GARTCharacterSettings = {}
     end
 
-    local defaultSettings = addonData.core.getDefaultCharacterCoreSettings();
+    local defaultSettings = addonData.core.getDefaultCharacterSettings()
 
     for setting, value in pairs(defaultSettings) do
-        if characterCoreSettings[setting] == nil then
-            characterCoreSettings[setting] = value
+        if GARTCharacterSettings[setting] == nil then
+            GARTCharacterSettings[setting] = value
         end
     end
 end
 
 addonData.core.trackerExists = function(trackerName)
-    for _, tracker in ipairs(addonData.core.trackersList) do
+    for _, tracker in ipairs(addonData.config.trackersList) do
         if (tracker.name == trackerName) then
             return true
         end
@@ -50,19 +57,19 @@ addonData.core.trackerExists = function(trackerName)
 end
 
 addonData.core.setTrackersPriority = function(trackerName, priority)
-    for index, tracker in ipairs(characterCoreSettings.trackersList) do
+    for _, tracker in ipairs(GARTCharacterSettings.trackersList) do
         if (tracker.name == trackerName) then
-            characterCoreSettings.trackersList[index].priority = priority
+            tracker.priority = priority
 
             break
         end
     end
 
-    table.sort(characterCoreSettings.trackersList, function(a, b) return a.priority > b.priority end)
+    table.sort(GARTCharacterSettings.trackersList, function(a, b) return a.priority > b.priority end)
 end
 
 addonData.core.resetTrackersListSettings = function()
-    characterCoreSettings.trackersList = addonData.core.trackersList
+    GARTCharacterSettings.trackersList = addonData.core.getDefaultCharacterTrackerList()
 end
 
 addonData.core.coreFrame = CreateFrame("Frame", addonName .. "CoreFrame", UIParent)
@@ -75,8 +82,23 @@ local CoreFrameOnEvent = function (self, event, ...)
         return
     end
 
-    if (event == 'ADDON_LOADED') then
-        addonData.core.LoadCharacterSettings()
+    if (event ~= 'ADDON_LOADED') then
+        return
+    end
+
+    addonData.core.loadVersion()
+    addonData.core.loadCharacterSettings()
+
+    addonData.utils.printWithName('Thank you for using this addon! Hope it makes your Azeroth life a little easier :)')
+    addonData.utils.printWithName('Version: ' .. addonData.core.version .. '. Use "/gart" command for help.')
+    addonData.utils.printWithName('If you found issues or want live feedback: https://www.curseforge.com/wow/addons/gigaautoresourcestracker.')
+
+    if (addonData.core.version ~= GARTCoreVersion) then
+        addonData.utils.printWithName('Addon has been updated from version: ' .. GARTCoreVersion .. ' to version: ' .. addonData.core.version .. '.')
+        addonData.utils.printWithName('Settings were restored to default.')
+
+        addonData.core.resetTrackersListSettings()
+        GARTCoreVersion = addonData.core.version
     end
 end
 
