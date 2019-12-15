@@ -75,6 +75,14 @@ end
 addonData.core.coreFrame = CreateFrame("Frame", addonName .. "CoreFrame", UIParent)
 addonData.core.coreFrame:RegisterEvent("ADDON_LOADED")
 
+local onVersionChange = function()
+    addonData.utils.printWithName('Addon has been updated from version: ' .. GARTCoreVersion .. ' to version: ' .. addonData.core.version .. '.')
+    GARTCoreVersion = addonData.core.version
+
+    addonData.core.resetTrackersListSettings()
+    addonData.utils.printWithName('Settings were restored to default.')
+end
+
 local CoreFrameOnEvent = function (self, event, ...)
     local args = {... }
 
@@ -94,11 +102,7 @@ local CoreFrameOnEvent = function (self, event, ...)
     addonData.utils.printWithName('If you found issues or want live feedback: https://www.curseforge.com/wow/addons/gigaautoresourcestracker.')
 
     if (addonData.core.version ~= GARTCoreVersion) then
-        addonData.utils.printWithName('Addon has been updated from version: ' .. GARTCoreVersion .. ' to version: ' .. addonData.core.version .. '.')
-        addonData.utils.printWithName('Settings were restored to default.')
-
-        addonData.core.resetTrackersListSettings()
-        GARTCoreVersion = addonData.core.version
+        onVersionChange()
     end
 end
 
