@@ -1,4 +1,4 @@
-## Interface: 11303
+## Interface: 11304
 
 ## Title: GigaAutoResourcesTracker
 ## Notes: Solve an issue when you forget to enable Find Minerals or Find Herbs.
