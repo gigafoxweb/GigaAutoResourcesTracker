@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Auto Trackers
+## Notes: Keeps your selected tracking ability active.
+## Author: Shadowstride
+## Version: 2.0.0-dev
+## SavedVariablesPerCharacter: AutoTrackersDB
+
+AutoTrackers.lua
