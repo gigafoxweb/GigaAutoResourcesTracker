@@ -51,6 +51,7 @@ local function Priority(info)
 end
 
 local function EnsureSelection(trackers)
+    if AutoTrackersDB.selectionDisabled == true then return end
     if AutoTrackersDB.selected and not AutoTrackersDB.automaticSelection then return end
     local best
     for _, info in ipairs(trackers) do
@@ -74,6 +75,10 @@ end
 
 local function Restore()
     if not ready or not Available() then return end
+    if AutoTrackersDB.selectionDisabled == true then
+        restoreRequested = false
+        return
+    end
     if AutoTrackersDB.mode ~= "always" and not restoreRequested then return end
     local trackers = Trackers()
     EnsureSelection(trackers)
@@ -255,8 +260,15 @@ local function BuildOptions(window)
                     row.label:SetWidth(290)
                     row.label:SetJustifyH("LEFT")
                     row:SetScript("OnClick", function(self)
-                        AutoTrackersDB.selected = self.key
-                        AutoTrackersDB.selectedName = self.trackerName
+                        if AutoTrackersDB.selected == self.key then
+                            AutoTrackersDB.selected = nil
+                            AutoTrackersDB.selectedName = nil
+                            AutoTrackersDB.selectionDisabled = true
+                        else
+                            AutoTrackersDB.selected = self.key
+                            AutoTrackersDB.selectedName = self.trackerName
+                            AutoTrackersDB.selectionDisabled = nil
+                        end
                         AutoTrackersDB.automaticSelection = false
                         lastError = nil
                         RequestRestore()
@@ -275,6 +287,8 @@ local function BuildOptions(window)
             content:SetHeight(math.max(1, #options * 32))
             if not Available() then
                 status:SetText("Tracking API is unavailable in this client.")
+            elseif AutoTrackersDB.selectionDisabled == true then
+                status:SetText("No fallback selected. Automatic restoration is disabled.")
             elseif activeTracker then
                 status:SetText("Active: " .. activeTracker.name)
             elseif not AutoTrackersDB.selected then
