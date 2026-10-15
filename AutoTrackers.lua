@@ -6,10 +6,13 @@ local lastError
 local settingsPanel, settingsRefresh, settingsCategory
 local restoreRequested, wasDead = false, false
 local restoreAttempts = 0
+local treasureRequested, treasureAttempts = false, 0
 
 local function RequestRestore()
     restoreRequested = true
     restoreAttempts = 0
+    treasureRequested = true
+    treasureAttempts = 0
     lastAttempt = -10
 end
 
@@ -18,7 +21,12 @@ local function Available()
         and C_Minimap.GetTrackingInfo and C_Minimap.SetTracking
 end
 
-local function Trackers()
+local function IsTreasure(info)
+    return info.spellID == 2481 or (C_Spell and C_Spell.GetSpellName
+        and info.name == C_Spell.GetSpellName(2481))
+end
+
+local function Trackers(treasureOnly)
     local list = {}
     if not Available() then return list end
     for index = 1, C_Minimap.GetNumTrackingTypes() do
@@ -28,7 +36,8 @@ local function Trackers()
                 type = category, subType = subType, spellID = spellID }
         end
         -- Exclude service/vendor minimap filters; show tracking abilities only.
-        if info.name and (info.type == "spell" or (info.spellID and info.spellID > 0)) then
+        if info.name and (info.type == "spell" or (info.spellID and info.spellID > 0))
+            and (not not IsTreasure(info)) == (treasureOnly == true) then
             list[#list + 1] = { index = index, name = info.name, texture = info.texture, spellID = info.spellID,
                 active = info.active == true or info.active == 1,
                 key = info.spellID and info.spellID > 0 and ("spell:" .. info.spellID)
@@ -75,36 +84,53 @@ end
 
 local function Restore()
     if not ready or not Available() then return end
-    if AutoTrackersDB.selectionDisabled == true then
-        restoreRequested = false
-        return
-    end
-    if AutoTrackersDB.mode ~= "always" and not restoreRequested then return end
     local trackers = Trackers()
     EnsureSelection(trackers)
-    -- Any active tracking ability satisfies the request, including a manual choice.
-    -- Clear pending recovery even in combat so it cannot override that choice later.
-    if ActiveTracker(trackers) then
+    -- Treasure never satisfies or blocks the independent primary request.
+    if AutoTrackersDB.selectionDisabled == true or ActiveTracker(trackers) then
         restoreRequested = false
-        return
+        restoreAttempts = 0
     end
+    local treasure = Trackers(true)[1]
+    if not AutoTrackersDB.treasureEnabled or (treasure and treasure.active) then
+        treasureRequested = false
+        treasureAttempts = 0
+    end
+    local primaryWanted = AutoTrackersDB.selectionDisabled ~= true
+        and not ActiveTracker(trackers)
+        and (AutoTrackersDB.mode == "always" or restoreRequested)
+        and (AutoTrackersDB.mode == "always" or restoreAttempts < 5)
+    local treasureWanted = AutoTrackersDB.treasureEnabled and treasure and not treasure.active
+        and (AutoTrackersDB.mode == "always" or treasureRequested)
+        and (AutoTrackersDB.mode == "always" or treasureAttempts < 5)
+    if not primaryWanted and not treasureWanted then return end
     if UnitIsDeadOrGhost("player") or InCombatLockdown() then return end
-    for _, info in ipairs(trackers) do
-        if info.key == AutoTrackersDB.selected then
-            if not info.active and GetTime() - lastAttempt >= 2 then
-                lastAttempt = GetTime()
-                restoreAttempts = restoreAttempts + 1
-                local ok, err = pcall(C_Minimap.SetTracking, info.index, true)
-                -- Finish this one-time restore after the API accepts it. Later
-                -- manual changes must not start another restore in recovery mode.
-                if ok or restoreAttempts >= 5 then restoreRequested = false end
-                if not ok and tostring(err) ~= lastError then
-                    lastError = tostring(err)
-                    print("|cffffcc00Auto Trackers:|r " .. lastError)
-                end
-            end
-            return
+    if C_Spell and C_Spell.GetSpellCooldown then
+        local cooldown = C_Spell.GetSpellCooldown(61304)
+        if cooldown and cooldown.duration and cooldown.duration > 0
+            and cooldown.startTime + cooldown.duration > GetTime() then return end
+    end
+    if GetTime() - lastAttempt < 2 then return end
+    local target
+    if primaryWanted then
+        for _, info in ipairs(trackers) do
+            if info.key == AutoTrackersDB.selected then target = info; break end
         end
+    end
+    if target then
+        restoreAttempts = restoreAttempts + 1
+    elseif treasureWanted then
+        target = treasure
+        treasureAttempts = treasureAttempts + 1
+    end
+    if not target then return end
+    lastAttempt = GetTime()
+    local ok, err = pcall(C_Minimap.SetTracking, target.index, true)
+    -- API acceptance is not proof of activation (for example during a GCD).
+    -- The next event/tick verifies the actual state before completing each request.
+    if not ok and tostring(err) ~= lastError then
+        lastError = tostring(err)
+        print("|cffffcc00Auto Trackers:|r " .. lastError)
     end
 end
 
@@ -146,6 +172,7 @@ local function BuildOptions(window)
                 if AutoTrackersDB.mode ~= self.key then
                     AutoTrackersDB.mode = self.key
                     restoreRequested = false
+                    treasureRequested = false
                     if self.key == "always" then RequestRestore() end
                 end
                 for _, row in ipairs(modeRows) do
@@ -157,7 +184,7 @@ local function BuildOptions(window)
         end
 
         local scroll = CreateFrame("ScrollFrame", nil, window, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 16, -195)
+        scroll:SetPoint("TOPLEFT", 16, -225)
         scroll:SetPoint("BOTTOMRIGHT", -34, 250)
         local content = CreateFrame("Frame", nil, scroll)
         content:SetSize(330, 1)
@@ -232,9 +259,19 @@ local function BuildOptions(window)
         bugReportHint:SetPoint("BOTTOM", 0, 16)
         bugReportHint:SetText("Click the link, then press Ctrl+C to copy")
         local rows = {}
+        local treasureButton = CreateFrame("CheckButton", nil, window, "UICheckButtonTemplate")
+        treasureButton:SetSize(28, 28)
+        treasureButton:SetPoint("TOPLEFT", 16, -184)
+        local treasureLabel = treasureButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        treasureLabel:SetPoint("LEFT", treasureButton, "RIGHT", 4, 0)
+        treasureLabel:SetText("Restore Find Treasure independently")
 
         local update
         update = function()
+            local treasure = Trackers(true)[1]
+            treasureButton:SetShown(treasure ~= nil)
+            treasureButton:SetChecked(AutoTrackersDB.treasureEnabled == true)
+            if treasure then treasureLabel:SetText(treasure.name .. " (independent)") end
             for _, row in ipairs(modeRows) do
                 row:SetChecked(row.key == AutoTrackersDB.mode)
             end
@@ -288,7 +325,7 @@ local function BuildOptions(window)
             if not Available() then
                 status:SetText("Tracking API is unavailable in this client.")
             elseif AutoTrackersDB.selectionDisabled == true then
-                status:SetText("No fallback selected. Automatic restoration is disabled.")
+                status:SetText("No primary fallback selected.")
             elseif activeTracker then
                 status:SetText("Active: " .. activeTracker.name)
             elseif not AutoTrackersDB.selected then
@@ -304,7 +341,20 @@ local function BuildOptions(window)
             else
                 status:SetText("Waiting to restore: " .. selected.name)
             end
+            if treasure then
+                status:SetText(status:GetText() .. "\n" .. treasure.name .. ": "
+                    .. (treasure.active and "active" or (AutoTrackersDB.treasureEnabled
+                        and "enabled for restoration" or "automatic restoration off")))
+            end
         end
+        treasureButton:SetScript("OnClick", function(self)
+            AutoTrackersDB.treasureEnabled = self:GetChecked() and true or false
+            treasureRequested = AutoTrackersDB.treasureEnabled
+            treasureAttempts = 0
+            Restore()
+            update()
+            Schedule()
+        end)
         window:SetScript("OnShow", update)
         return update
 end
@@ -356,6 +406,13 @@ events:SetScript("OnEvent", function(_, event, name)
         if type(AutoTrackersDB) ~= "table" then AutoTrackersDB = {} end
         if type(AutoTrackersDB.selected) ~= "string" then AutoTrackersDB.selected = nil end
         if type(AutoTrackersDB.selectedName) ~= "string" then AutoTrackersDB.selectedName = nil end
+        if AutoTrackersDB.treasureEnabled == nil then AutoTrackersDB.treasureEnabled = true end
+        if AutoTrackersDB.selected == "spell:2481" or (AutoTrackersDB.selectedName
+            and IsTreasure({ name = AutoTrackersDB.selectedName })) then
+            AutoTrackersDB.selected = nil
+            AutoTrackersDB.selectedName = nil
+            AutoTrackersDB.automaticSelection = true
+        end
         if AutoTrackersDB.mode ~= "always" and AutoTrackersDB.mode ~= "recovery" then
             AutoTrackersDB.mode = "recovery"
         end
@@ -374,6 +431,7 @@ events:SetScript("OnEvent", function(_, event, name)
         elseif event == "PLAYER_DEAD" then
             wasDead = true
             restoreRequested = false
+            treasureRequested = false
         elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" or event == "PLAYER_ENTERING_WORLD" then
             if UnitIsDeadOrGhost("player") then
                 wasDead = true

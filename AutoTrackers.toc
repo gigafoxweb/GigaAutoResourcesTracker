@@ -2,7 +2,7 @@
 ## Title: Auto Trackers
 ## Notes: Keeps your selected tracking ability active.
 ## Author: Shadowstride
-## Version: 2.0.0-dev
+## Version: 2.0.2
 ## SavedVariablesPerCharacter: AutoTrackersDB
 
 AutoTrackers.lua
