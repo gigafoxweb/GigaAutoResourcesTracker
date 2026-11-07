@@ -7,8 +7,10 @@ local settingsPanel, settingsRefresh, settingsCategory
 local restoreRequested, wasDead = false, false
 local restoreAttempts = 0
 local treasureRequested, treasureAttempts = false, 0
+local applyRequested, currentEnvironment, worldLoading = false, nil, false
 
 local function RequestRestore()
+    applyRequested = true
     restoreRequested = true
     restoreAttempts = 0
     treasureRequested = true
@@ -82,12 +84,41 @@ local function ActiveTracker(trackers)
     end
 end
 
+local function Environment()
+    local _, instanceType = IsInInstance()
+    if instanceType == "pvp" then return "battleground" end
+    if instanceType == "party" or instanceType == "raid" then return "dungeon" end
+    return "world"
+end
+
+local function Selection(environment)
+    local choice = environment ~= "world" and AutoTrackersDB.environmentSelections[environment] or "inherit"
+    if choice == "disabled" then return nil end
+    if choice == "inherit" then
+        if AutoTrackersDB.selectionDisabled then return nil end
+        return AutoTrackersDB.selected
+    end
+    return choice
+end
+
+local function Matches(info, key)
+    if info.key == key then return true end
+    local id = key and tonumber(key:match("^spell:(%d+)$"))
+    return id and C_Spell and C_Spell.GetSpellName and info.name == C_Spell.GetSpellName(id)
+end
+
 local function Restore()
-    if not ready or not Available() then return end
+    if not ready or not Available() or worldLoading then return end
+    local environment = Environment()
+    if currentEnvironment and currentEnvironment ~= environment then RequestRestore() end
+    currentEnvironment = environment
     local trackers = Trackers()
     EnsureSelection(trackers)
-    -- Treasure never satisfies or blocks the independent primary request.
-    if AutoTrackersDB.selectionDisabled == true or ActiveTracker(trackers) then
+    local wanted = Selection(environment)
+    local active = ActiveTracker(trackers)
+    -- Travel/resurrection applies this environment's choice; ordinary ticks respect manual choices.
+    if not wanted or (active and (not applyRequested or Matches(active, wanted))) then
+        applyRequested = false
         restoreRequested = false
         restoreAttempts = 0
     end
@@ -96,8 +127,8 @@ local function Restore()
         treasureRequested = false
         treasureAttempts = 0
     end
-    local primaryWanted = AutoTrackersDB.selectionDisabled ~= true
-        and not ActiveTracker(trackers)
+    local primaryWanted = wanted ~= nil
+        and (applyRequested or not active)
         and (AutoTrackersDB.mode == "always" or restoreRequested)
         and (AutoTrackersDB.mode == "always" or restoreAttempts < 5)
     local treasureWanted = AutoTrackersDB.treasureEnabled and treasure and not treasure.active
@@ -114,7 +145,7 @@ local function Restore()
     local target
     if primaryWanted then
         for _, info in ipairs(trackers) do
-            if info.key == AutoTrackersDB.selected then target = info; break end
+            if Matches(info, wanted) then target = info; break end
         end
     end
     if target then
@@ -150,15 +181,15 @@ local function BuildOptions(window)
         description:SetPoint("TOPLEFT", 18, -40)
         description:SetWidth(350)
         description:SetJustifyH("LEFT")
-        description:SetText("Choose a fallback for when no tracking is active.\nYour settings are saved for this character.")
+        description:SetText("Choose tracking for each environment.\nYour settings are saved for this character.")
 
         local modeRows = {}
         local modeHint = window:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        modeHint:SetPoint("TOPLEFT", 20, -146)
-        modeHint:SetWidth(345)
+        modeHint:SetPoint("TOPLEFT", 18, -146)
+        modeHint:SetWidth(350)
         modeHint:SetJustifyH("LEFT")
         for i, mode in ipairs({
-            { key = "recovery", label = "Restore after login or resurrection" },
+            { key = "recovery", label = "Apply on travel or resurrection" },
             { key = "always", label = "Keep tracking active" },
         }) do
             local button = CreateFrame("CheckButton", nil, window, "UICheckButtonTemplate")
@@ -183,20 +214,38 @@ local function BuildOptions(window)
             modeRows[i] = button
         end
 
-        local scroll = CreateFrame("ScrollFrame", nil, window, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 16, -225)
-        scroll:SetPoint("BOTTOMRIGHT", -34, 250)
-        local content = CreateFrame("Frame", nil, scroll)
-        content:SetSize(330, 1)
-        scroll:SetScrollChild(content)
+        local editingEnvironment = "world"
+        local tabs = {}
+        local update
+        for i, tab in ipairs({
+            { key = "world", label = "World" },
+            { key = "battleground", label = "Battlegrounds" },
+            { key = "dungeon", label = "Dungeons / raids" },
+        }) do
+            local button = CreateFrame("Button", nil, window, "UIPanelButtonTemplate")
+            button:SetSize(114, 24)
+            button:SetPoint("TOPLEFT", 18 + (i - 1) * 118, -222)
+            button:SetText(tab.label)
+            button.key = tab.key
+            button:SetScript("OnClick", function()
+                editingEnvironment = tab.key
+                update()
+            end)
+            tabs[#tabs + 1] = button
+        end
+        local content = CreateFrame("Frame", nil, window)
+        content:SetPoint("TOPLEFT", 16, -258)
+        content:SetSize(350, 1)
 
         local status = window:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        status:SetPoint("BOTTOMLEFT", 18, 210)
+        status:SetPoint("TOPLEFT", content, "BOTTOMLEFT", 2, -12)
         status:SetWidth(350)
         status:SetJustifyH("LEFT")
 
         local credit = window:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        credit:SetPoint("BOTTOM", 0, 186)
+        credit:SetPoint("TOP", status, "BOTTOM", 0, -20)
+        credit:SetWidth(350)
+        credit:SetJustifyH("CENTER")
         credit:SetText("Made by Shadowstride")
 
         local thanks = window:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -208,7 +257,7 @@ local function BuildOptions(window)
         local donationURL = "https://donatello.to/shadowstride"
         local donationLink = CreateFrame("EditBox", nil, window, "InputBoxTemplate")
         donationLink:SetSize(300, 22)
-        donationLink:SetPoint("BOTTOM", 0, 109)
+        donationLink:SetPoint("TOP", thanks, "BOTTOM", 0, -10)
         donationLink:SetAutoFocus(false)
         donationLink:SetFontObject("GameFontHighlightSmall")
         donationLink:SetJustifyH("CENTER")
@@ -227,17 +276,17 @@ local function BuildOptions(window)
         donationLink:SetScript("OnHide", function(self) self:ClearFocus() end)
 
         local donationHint = window:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        donationHint:SetPoint("BOTTOM", 0, 92)
+        donationHint:SetPoint("TOP", donationLink, "BOTTOM", 0, -4)
         donationHint:SetText("Click the link, then press Ctrl+C to copy")
 
         local bugReportTitle = window:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        bugReportTitle:SetPoint("BOTTOM", 0, 64)
+        bugReportTitle:SetPoint("TOP", donationHint, "BOTTOM", 0, -14)
         bugReportTitle:SetText("Found a bug? Leave a comment on CurseForge:")
 
         local bugReportURL = "https://www.curseforge.com/wow/addons/auto-trackers/comments"
         local bugReportLink = CreateFrame("EditBox", nil, window, "InputBoxTemplate")
         bugReportLink:SetSize(350, 22)
-        bugReportLink:SetPoint("BOTTOM", 0, 34)
+        bugReportLink:SetPoint("TOP", bugReportTitle, "BOTTOM", 0, -8)
         bugReportLink:SetAutoFocus(false)
         bugReportLink:SetFontObject("GameFontHighlightSmall")
         bugReportLink:SetJustifyH("LEFT")
@@ -256,7 +305,7 @@ local function BuildOptions(window)
         bugReportLink:SetScript("OnHide", function(self) self:ClearFocus() end)
 
         local bugReportHint = window:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        bugReportHint:SetPoint("BOTTOM", 0, 16)
+        bugReportHint:SetPoint("TOP", bugReportLink, "BOTTOM", 0, -4)
         bugReportHint:SetText("Click the link, then press Ctrl+C to copy")
         local rows = {}
         local treasureButton = CreateFrame("CheckButton", nil, window, "UICheckButtonTemplate")
@@ -266,47 +315,62 @@ local function BuildOptions(window)
         treasureLabel:SetPoint("LEFT", treasureButton, "RIGHT", 4, 0)
         treasureLabel:SetText("Restore Find Treasure independently")
 
-        local update
         update = function()
+            for _, tab in ipairs(tabs) do tab:SetEnabled(tab.key ~= editingEnvironment) end
             local treasure = Trackers(true)[1]
             treasureButton:SetShown(treasure ~= nil)
             treasureButton:SetChecked(AutoTrackersDB.treasureEnabled == true)
             if treasure then treasureLabel:SetText(treasure.name .. " (independent)") end
+            local tabOffset = treasure and 224 or 184
+            for i, tab in ipairs(tabs) do
+                tab:ClearAllPoints()
+                tab:SetPoint("TOPLEFT", 18 + (i - 1) * 118, -tabOffset)
+            end
+            content:ClearAllPoints()
+            content:SetPoint("TOPLEFT", 16, -(tabOffset + 36))
             for _, row in ipairs(modeRows) do
                 row:SetChecked(row.key == AutoTrackersDB.mode)
             end
             if AutoTrackersDB.mode == "always" then
-                modeHint:SetText("Enables your choice whenever no tracking is active.\nLeaves other active tracking abilities unchanged.")
+                modeHint:SetText("Applies your choice on travel or resurrection.\nAlso restores it whenever no tracking is active.")
             else
-                modeHint:SetText("After login, /reload or resurrection, enables your\nchoice only if no tracking ability is active.")
+                modeHint:SetText("Applies your choice on login, travel or resurrection.\nManual changes last until the next application.")
             end
             local trackers = Trackers()
             local activeTracker = ActiveTracker(trackers)
             EnsureSelection(trackers)
-            local options = trackers
+            local options = {}
+            local chosen = editingEnvironment == "world"
+                and (AutoTrackersDB.selectionDisabled and "disabled" or AutoTrackersDB.selected)
+                or AutoTrackersDB.environmentSelections[editingEnvironment]
+            if editingEnvironment ~= "world" then
+                options[#options + 1] = { key = "inherit", name = "Same as World" }
+            end
+            options[#options + 1] = { key = "disabled", name = "No automatic tracking" }
+            for _, info in ipairs(trackers) do options[#options + 1] = info end
             for _, row in ipairs(rows) do row:Hide() end
             local selected
+            local columns = #options > 6 and 2 or 1
+            local columnRows = math.ceil(#options / columns)
             for i, info in ipairs(options) do
                 local row = rows[i]
                 if not row then
                     row = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
                     row:SetSize(28, 28)
-                    row:SetPoint("TOPLEFT", 0, -(i - 1) * 32)
+                    row:SetPoint("TOPLEFT", 0, -(i - 1) * 26)
                     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
                     row.label:SetPoint("LEFT", row, "RIGHT", 4, 0)
                     row.label:SetWidth(290)
                     row.label:SetJustifyH("LEFT")
                     row:SetScript("OnClick", function(self)
-                        if AutoTrackersDB.selected == self.key then
-                            AutoTrackersDB.selected = nil
-                            AutoTrackersDB.selectedName = nil
-                            AutoTrackersDB.selectionDisabled = true
+                        if editingEnvironment == "world" then
+                            AutoTrackersDB.selectionDisabled = self.key == "disabled" or nil
+                            AutoTrackersDB.selected = self.key ~= "disabled" and self.key or nil
+                            AutoTrackersDB.selectedName = self.key ~= "disabled" and self.trackerName or nil
+                            AutoTrackersDB.automaticSelection = false
                         else
-                            AutoTrackersDB.selected = self.key
-                            AutoTrackersDB.selectedName = self.trackerName
-                            AutoTrackersDB.selectionDisabled = nil
+                            AutoTrackersDB.environmentSelections[editingEnvironment] = self.key
                         end
-                        AutoTrackersDB.automaticSelection = false
                         lastError = nil
                         RequestRestore()
                         Restore()
@@ -315,23 +379,27 @@ local function BuildOptions(window)
                     end)
                     rows[i] = row
                 end
+                row:ClearAllPoints()
+                local column = math.floor((i - 1) / columnRows)
+                row:SetPoint("TOPLEFT", column * 178, -((i - 1) % columnRows) * 26)
+                row.label:SetWidth(columns == 2 and 140 or 290)
                 row.key, row.trackerName = info.key, info.key and info.name or nil
                 row.label:SetText(info.name)
-                row:SetChecked(AutoTrackersDB.selected == info.key)
+                row:SetChecked(chosen == info.key)
                 row:Show()
-                if info.key and info.key == AutoTrackersDB.selected then selected = info end
+                if info.key and Matches(info, Selection(Environment())) then selected = info end
             end
-            content:SetHeight(math.max(1, #options * 32))
+            content:SetHeight(math.max(1, columnRows * 26))
             if not Available() then
                 status:SetText("Tracking API is unavailable in this client.")
-            elseif AutoTrackersDB.selectionDisabled == true then
-                status:SetText("No primary fallback selected.")
+            elseif not Selection(Environment()) then
+                status:SetText("Automatic tracking disabled for this environment.")
             elseif activeTracker then
                 status:SetText("Active: " .. activeTracker.name)
-            elseif not AutoTrackersDB.selected then
+            elseif not Selection(Environment()) then
                 status:SetText("No tracking abilities available on this character.")
             elseif not selected then
-                status:SetText("Saved ability is currently unavailable: " .. (AutoTrackersDB.selectedName or "unknown"))
+                status:SetText("Saved ability is currently unavailable: " .. (Selection(Environment()) or "unknown"))
             elseif UnitIsDeadOrGhost("player") then
                 status:SetText("Waiting for resurrection: " .. selected.name)
             elseif AutoTrackersDB.mode ~= "always" and not restoreRequested then
@@ -416,6 +484,18 @@ events:SetScript("OnEvent", function(_, event, name)
         if AutoTrackersDB.mode ~= "always" and AutoTrackersDB.mode ~= "recovery" then
             AutoTrackersDB.mode = "recovery"
         end
+        if type(AutoTrackersDB.environmentSelections) ~= "table" then
+            AutoTrackersDB.environmentSelections = {}
+        end
+        local choices = AutoTrackersDB.environmentSelections
+        if type(choices.battleground) ~= "string" then
+            local _, class = UnitClass("player")
+            choices.battleground = class == "HUNTER" and "spell:19883" or "inherit"
+        end
+        if type(choices.dungeon) ~= "string" then choices.dungeon = "inherit" end
+        -- Old battleground overrides are replaced by explicit environment choices.
+        AutoTrackersDB.battlegroundReturn = nil
+        AutoTrackersDB.battlegroundHumanoids = nil
         ready = true
         -- Polling only restores in always mode or while a one-time request is pending.
         C_Timer.NewTicker(3, function()
@@ -425,6 +505,11 @@ events:SetScript("OnEvent", function(_, event, name)
         end)
     end
     if ready then
+        if event == "PLAYER_LEAVING_WORLD" then
+            worldLoading = true
+        elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_LOGIN" then
+            worldLoading = false
+        end
         if event == "PLAYER_LOGIN" then
             wasDead = UnitIsDeadOrGhost("player") and true or false
             RequestRestore()
@@ -444,7 +529,7 @@ events:SetScript("OnEvent", function(_, event, name)
     if ready then RegisterSettings() end
     Schedule()
 end)
-for _, event in ipairs({ "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD",
+for _, event in ipairs({ "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LEAVING_WORLD",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST", "PLAYER_REGEN_ENABLED", "SPELLS_CHANGED",
     "MINIMAP_UPDATE_TRACKING" }) do
     events:RegisterEvent(event)
