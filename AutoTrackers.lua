@@ -8,6 +8,13 @@ local restoreRequested, wasDead = false, false
 local restoreAttempts = 0
 local treasureRequested, treasureAttempts = false, 0
 local applyRequested, currentEnvironment, worldLoading = false, nil, false
+local isHunter, hunterTargetGUID, hunterTargetReadyAt, worldReturnAt, hunterOverride
+local hunterSessionTrackers = {}
+local hunterTrackingSpells = {
+    [1] = 1494, [2] = 19879, [3] = 19878, [4] = 19880,
+    [5] = 19882, [6] = 19884, [7] = 19883,
+}
+local Restore
 
 local function RequestRestore()
     applyRequested = true
@@ -107,15 +114,92 @@ local function Matches(info, key)
     return id and C_Spell and C_Spell.GetSpellName and info.name == C_Spell.GetSpellName(id)
 end
 
-local function Restore()
+local function FindTracker(trackers, key)
+    if not key then return end
+    for _, info in ipairs(trackers) do
+        if Matches(info, key) then return info end
+    end
+end
+
+local function HunterTracker(environment, trackers, wanted)
+    if not isHunter or environment ~= "world" then return end
+    if not hunterOverride and not AutoTrackersDB.hunterTracking[environment] then
+        hunterTargetGUID, hunterTargetReadyAt = nil, nil
+        return
+    end
+    if InCombatLockdown() or UnitAffectingCombat("player") or UnitIsDeadOrGhost("player") then
+        hunterTargetGUID, hunterTargetReadyAt, worldReturnAt = nil, nil, nil
+        return
+    end
+
+    local guid, target
+    if AutoTrackersDB.hunterTracking[environment] and UnitCanAttack("player", "target")
+        and not UnitIsDeadOrGhost("target") then
+        local _, creatureTypeID = UnitCreatureType("target")
+        if issecretvalue and issecretvalue(creatureTypeID) then
+            hunterTargetGUID, hunterTargetReadyAt, worldReturnAt = nil, nil, nil
+            return nil, hunterOverride ~= nil
+        end
+        local spellID = hunterTrackingSpells[creatureTypeID]
+        target = spellID and FindTracker(trackers, "spell:" .. spellID)
+        guid = target and UnitGUID("target")
+        if issecretvalue and issecretvalue(guid) then
+            hunterTargetGUID, hunterTargetReadyAt, worldReturnAt = nil, nil, nil
+            return nil, hunterOverride ~= nil
+        end
+    end
+    local now = GetTime()
+    if guid then
+        worldReturnAt = nil
+        if guid ~= hunterTargetGUID then
+            hunterTargetGUID, hunterTargetReadyAt = guid, now + 0.7
+            C_Timer.After(0.7, Restore)
+        end
+        if now >= hunterTargetReadyAt then return target, true end
+        return nil, true
+    end
+
+    hunterTargetGUID, hunterTargetReadyAt = nil, nil
+    if not hunterOverride then return end
+    local sessionTracker = FindTracker(trackers, hunterSessionTrackers[environment])
+    if sessionTracker then wanted = sessionTracker.key end
+    if not wanted then
+        hunterOverride, worldReturnAt = nil, nil
+        return
+    end
+    if not worldReturnAt then
+        worldReturnAt = now + 3
+        C_Timer.After(3, Restore)
+    end
+    if now < worldReturnAt then return nil, true end
+    local base = FindTracker(trackers, wanted)
+    if base and base.active then
+        hunterOverride, worldReturnAt = nil, nil
+        return
+    end
+    return base, true, true
+end
+
+Restore = function()
     if not ready or not Available() or worldLoading then return end
     local environment = Environment()
-    if currentEnvironment and currentEnvironment ~= environment then RequestRestore() end
+    if currentEnvironment and currentEnvironment ~= environment then
+        hunterTargetGUID, hunterTargetReadyAt, worldReturnAt, hunterOverride = nil, nil, nil, nil
+        RequestRestore()
+    end
     currentEnvironment = environment
     local trackers = Trackers()
     EnsureSelection(trackers)
     local wanted = Selection(environment)
     local active = ActiveTracker(trackers)
+    local profileTracker = FindTracker(trackers, wanted)
+    local sessionTracker = isHunter and environment == "world" and AutoTrackersDB.hunterTracking.world
+        and FindTracker(trackers, hunterSessionTrackers[environment])
+    if applyRequested and sessionTracker then wanted = sessionTracker.key end
+    -- During profile application the active tracker may belong to the previous zone.
+    local previous = active
+    if applyRequested then previous = sessionTracker or profileTracker end
+    local hunterTarget, hunterHandlesPrimary, returning = HunterTracker(environment, trackers, wanted)
     -- Travel/resurrection applies this environment's choice; ordinary ticks respect manual choices.
     if not wanted or (active and (not applyRequested or Matches(active, wanted))) then
         applyRequested = false
@@ -134,29 +218,37 @@ local function Restore()
     local treasureWanted = AutoTrackersDB.treasureEnabled and treasure and not treasure.active
         and (AutoTrackersDB.mode == "always" or treasureRequested)
         and (AutoTrackersDB.mode == "always" or treasureAttempts < 5)
-    if not primaryWanted and not treasureWanted then return end
+    primaryWanted = primaryWanted and not hunterHandlesPrimary
+    if hunterTarget and hunterTarget.active then
+        applyRequested, restoreRequested, restoreAttempts = false, false, 0
+        hunterTarget = nil
+    end
+    if not hunterTarget and not primaryWanted and not treasureWanted then return end
     if UnitIsDeadOrGhost("player") or InCombatLockdown() then return end
+    if hunterTarget and (UnitAffectingCombat("player") or UnitCastingInfo("player")
+        or UnitChannelInfo("player")) then return end
     if C_Spell and C_Spell.GetSpellCooldown then
         local cooldown = C_Spell.GetSpellCooldown(61304)
         if cooldown and cooldown.duration and cooldown.duration > 0
             and cooldown.startTime + cooldown.duration > GetTime() then return end
     end
     if GetTime() - lastAttempt < 2 then return end
-    local target
-    if primaryWanted then
-        for _, info in ipairs(trackers) do
-            if Matches(info, wanted) then target = info; break end
-        end
-    end
-    if target then
+    local target = hunterTarget or (primaryWanted and FindTracker(trackers, wanted))
+    if target and not hunterTarget then
         restoreAttempts = restoreAttempts + 1
-    elseif treasureWanted then
+    elseif not target and treasureWanted then
         target = treasure
         treasureAttempts = treasureAttempts + 1
     end
     if not target then return end
     lastAttempt = GetTime()
     local ok, err = pcall(C_Minimap.SetTracking, target.index, true)
+    if ok and hunterTarget and not returning then
+        if not hunterOverride then
+            hunterSessionTrackers[environment] = previous and previous.key
+        end
+        hunterOverride = target.key
+    end
     -- API acceptance is not proof of activation (for example during a GCD).
     -- The next event/tick verifies the actual state before completing each request.
     if not ok and tostring(err) ~= lastError then
@@ -315,8 +407,37 @@ local function BuildOptions(window)
         treasureLabel:SetPoint("LEFT", treasureButton, "RIGHT", 4, 0)
         treasureLabel:SetText("Restore Find Treasure independently")
 
+        local hunterSection, hunterButton
+        if isHunter then
+            hunterSection = CreateFrame("Frame", nil, content)
+            hunterSection:SetSize(350, 50)
+            local divider = hunterSection:CreateTexture(nil, "ARTWORK")
+            divider:SetPoint("TOPLEFT", 2, 0)
+            divider:SetPoint("TOPRIGHT", -2, 0)
+            divider:SetHeight(1)
+            divider:SetColorTexture(1, 0.82, 0, 0.25)
+            local heading = hunterSection:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            heading:SetPoint("TOPLEFT", 2, -9)
+            heading:SetText("Hunter Target Tracking")
+            hunterButton = CreateFrame("CheckButton", nil, hunterSection, "UICheckButtonTemplate")
+            hunterButton:SetSize(22, 22)
+            hunterButton:SetPoint("TOPLEFT", 1, -25)
+            local label = hunterButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            label:SetPoint("LEFT", hunterButton, "RIGHT", 4, 0)
+            label:SetText("Automatically match your target before combat")
+            hunterButton:SetScript("OnClick", function(self)
+                AutoTrackersDB.hunterTracking.world = self:GetChecked() == true
+                Schedule()
+            end)
+        end
+
         update = function()
             for _, tab in ipairs(tabs) do tab:SetEnabled(tab.key ~= editingEnvironment) end
+            local hunterOptionShown = hunterButton and editingEnvironment == "world"
+            if hunterButton then
+                hunterSection:SetShown(hunterOptionShown)
+                hunterButton:SetChecked(AutoTrackersDB.hunterTracking.world)
+            end
             local treasure = Trackers(true)[1]
             treasureButton:SetShown(treasure ~= nil)
             treasureButton:SetChecked(AutoTrackersDB.treasureEnabled == true)
@@ -346,7 +467,9 @@ local function BuildOptions(window)
             if editingEnvironment ~= "world" then
                 options[#options + 1] = { key = "inherit", name = "Same as World" }
             end
-            options[#options + 1] = { key = "disabled", name = "No automatic tracking" }
+            local disabledLabel = hunterOptionShown and AutoTrackersDB.hunterTracking.world
+                and "No default tracker" or "No automatic tracking"
+            options[#options + 1] = { key = "disabled", name = disabledLabel }
             for _, info in ipairs(trackers) do options[#options + 1] = info end
             for _, row in ipairs(rows) do row:Hide() end
             local selected
@@ -371,6 +494,7 @@ local function BuildOptions(window)
                         else
                             AutoTrackersDB.environmentSelections[editingEnvironment] = self.key
                         end
+                        hunterSessionTrackers[editingEnvironment] = nil
                         lastError = nil
                         RequestRestore()
                         Restore()
@@ -389,7 +513,12 @@ local function BuildOptions(window)
                 row:Show()
                 if info.key and Matches(info, Selection(Environment())) then selected = info end
             end
-            content:SetHeight(math.max(1, columnRows * 26))
+            local trackerListHeight = columnRows * 26
+            if hunterOptionShown then
+                hunterSection:ClearAllPoints()
+                hunterSection:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(trackerListHeight + 6))
+            end
+            content:SetHeight(math.max(1, trackerListHeight + (hunterOptionShown and 56 or 0)))
             if not Available() then
                 status:SetText("Tracking API is unavailable in this client.")
             elseif not Selection(Environment()) then
@@ -445,7 +574,7 @@ local function ShowOptions()
     if not window then
         window = CreateFrame("Frame", "AutoTrackersOptions", UIParent, "BasicFrameTemplateWithInset")
         window:Hide()
-        window:SetSize(390, 660)
+        window:SetSize(390, isHunter and 718 or 660)
         window:SetPoint("CENTER")
         window:SetFrameStrata("DIALOG")
         window:SetClampedToScreen(true)
@@ -487,10 +616,20 @@ events:SetScript("OnEvent", function(_, event, name)
         if type(AutoTrackersDB.environmentSelections) ~= "table" then
             AutoTrackersDB.environmentSelections = {}
         end
+        local _, class = UnitClass("player")
+        isHunter = class == "HUNTER"
+        if type(AutoTrackersDB.hunterTracking) ~= "table" then AutoTrackersDB.hunterTracking = {} end
+        AutoTrackersDB.hunterTracking.world = AutoTrackersDB.hunterTracking.world == true
+        AutoTrackersDB.hunterTracking.dungeon = nil
+        if isHunter then
+            events:RegisterEvent("PLAYER_TARGET_CHANGED")
+            events:RegisterEvent("PLAYER_REGEN_DISABLED")
+            events:RegisterUnitEvent("UNIT_HEALTH", "target")
+            events:RegisterUnitEvent("UNIT_FLAGS", "target")
+        end
         local choices = AutoTrackersDB.environmentSelections
         if type(choices.battleground) ~= "string" then
-            local _, class = UnitClass("player")
-            choices.battleground = class == "HUNTER" and "spell:19883" or "inherit"
+            choices.battleground = isHunter and "spell:19883" or "inherit"
         end
         if type(choices.dungeon) ~= "string" then choices.dungeon = "inherit" end
         -- Old battleground overrides are replaced by explicit environment choices.
@@ -505,6 +644,16 @@ events:SetScript("OnEvent", function(_, event, name)
         end)
     end
     if ready then
+        if event == "UNIT_HEALTH" or event == "UNIT_FLAGS" or event == "PLAYER_TARGET_CHANGED" then
+            if Environment() ~= "world" then return end
+            if not hunterOverride and not AutoTrackersDB.hunterTracking.world then return end
+            if InCombatLockdown() then return end
+            if event == "UNIT_HEALTH" and not UnitIsDeadOrGhost("target") then return end
+            if event == "PLAYER_TARGET_CHANGED" then hunterTargetGUID, hunterTargetReadyAt = nil, nil end
+        end
+        if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_LEAVING_WORLD" or event == "PLAYER_DEAD" then
+            hunterTargetGUID, hunterTargetReadyAt, worldReturnAt = nil, nil, nil
+        end
         if event == "PLAYER_LEAVING_WORLD" then
             worldLoading = true
         elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_LOGIN" then
